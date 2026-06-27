@@ -59,6 +59,7 @@
     -webkit-font-smoothing:antialiased;
     overscroll-behavior-y: none;
     height:100vh;
+    height:100dvh;
     overflow:hidden;
   }
   .display{font-family:'Fredoka', 'Nunito Sans', sans-serif;}
@@ -67,11 +68,11 @@
     max-width:520px;
     margin:0 auto;
     height:100vh;
+    height:100dvh;
     display:none;
     flex-direction:column;
     position:relative;
     background:var(--bg);
-    overflow:hidden;
   }
   #app.app-visible{ display:flex; }
 
@@ -1810,14 +1811,21 @@ document.addEventListener('visibilitychange', function(){
 
 async function manualSyncNow(){
   if(!currentUser){ showToast('Sign in to sync'); return; }
+  if(!supabaseClient){ showToast('Still connecting — try again in a moment'); return; }
   showToast('Syncing…');
+  const localSnapshotBeforePull = JSON.stringify(state);
   await pullStateFromCloud(true);
-  await pushStateToCloud();
+  const changedByPull = JSON.stringify(state) !== localSnapshotBeforePull;
+  if(!changedByPull){
+    // Nothing newer existed in the cloud — safe to push our local copy up
+    // (covers the case where THIS device has the newer changes).
+    await pushStateToCloud();
+  }
   render();
   renderDashboard();
   refreshCurrentPage();
   updateLastSyncedDisplay();
-  showToast('Synced ✓');
+  showToast(changedByPull ? 'Synced ✓ — got updates from another device' : 'Synced ✓');
 }
 
 function updateLastSyncedDisplay(){
