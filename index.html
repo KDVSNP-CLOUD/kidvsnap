@@ -1612,6 +1612,15 @@
     <div class="cancel-link" onclick="closeBarcodeScanner()">Cancel</div>
   </div>
 
+  <!-- CUSTOM CONFIRM SHEET (replaces native confirm() which is unreliable in PWA/standalone mode) -->
+  <div class="sheet" id="customConfirmSheet" style="z-index:60;">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title display" id="customConfirmTitle">Are you sure?</div>
+    <div id="customConfirmMessage" style="font-size:14px; color:var(--ink-soft); margin-bottom:20px; line-height:1.5;"></div>
+    <button class="save-btn" id="customConfirmYesBtn" style="background:var(--bad);">Yes, Continue</button>
+    <div class="cancel-link" onclick="closeCustomConfirm()">Cancel</div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
 </div>
@@ -1643,12 +1652,17 @@ function initSupabase(){
 
 async function checkExistingSession(){
   if(!supabaseClient) return false;
-  const { data, error } = await supabaseClient.auth.getSession();
-  if(data && data.session && data.session.user){
-    currentUser = data.session.user;
-    return true;
+  try{
+    const { data, error } = await supabaseClient.auth.getSession();
+    if(data && data.session && data.session.user){
+      currentUser = data.session.user;
+      return true;
+    }
+    return false;
+  }catch(e){
+    console.warn('checkExistingSession failed', e);
+    return false;
   }
-  return false;
 }
 
 async function sendMagicLink(){
@@ -1662,18 +1676,24 @@ async function sendMagicLink(){
     return;
   }
   document.getElementById('sendLinkBtn').textContent = 'Sending…';
-  const { error } = await supabaseClient.auth.signInWithOtp({
-    email,
-    options: { emailRedirectTo: window.location.href }
-  });
-  document.getElementById('sendLinkBtn').textContent = 'Send Login Link';
-  if(error){
-    document.getElementById('loginStatusMsg').textContent = 'Could not send link: ' + error.message;
-    return;
+  try{
+    const { error } = await supabaseClient.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: window.location.href }
+    });
+    document.getElementById('sendLinkBtn').textContent = 'Send Login Link';
+    if(error){
+      document.getElementById('loginStatusMsg').textContent = 'Could not send link: ' + error.message;
+      return;
+    }
+    document.getElementById('sentToEmail').textContent = email;
+    document.getElementById('loginEmailStep').style.display = 'none';
+    document.getElementById('loginSentStep').style.display = 'block';
+  }catch(e){
+    console.warn('sendMagicLink failed', e);
+    document.getElementById('sendLinkBtn').textContent = 'Send Login Link';
+    document.getElementById('loginStatusMsg').textContent = 'Something went wrong — check your internet and try again';
   }
-  document.getElementById('sentToEmail').textContent = email;
-  document.getElementById('loginEmailStep').style.display = 'none';
-  document.getElementById('loginSentStep').style.display = 'block';
 }
 
 function resetLoginScreen(){
@@ -1699,46 +1719,52 @@ let syncInFlight = false;
 let periodicSyncTimer = null;
 
 async function pullStateFromCloud(silent){
-  if(!supabaseClient || !currentUser) return;
-  const { data, error } = await supabaseClient
-    .from('kidvsnap_data')
-    .select('data, updated_at')
-    .eq('user_id', currentUser.id)
-    .maybeSingle();
-  if(error){
-    console.warn('Pull failed', error);
-    return;
-  }
-  if(data && data.data && Array.isArray(data.data.reminders)){
-    const cloudUpdatedAt = data.updated_at;
-    // If our local copy is already at least as new as the cloud's, don't clobber it.
-    if(lastSyncedAt && cloudUpdatedAt && new Date(cloudUpdatedAt) <= new Date(lastSyncedAt)){
-      return;
+  if(!supabaseClient || !currentUser) return false;
+  try{
+    const { data, error } = await supabaseClient
+      .from('kidvsnap_data')
+      .select('data, updated_at')
+      .eq('user_id', currentUser.id)
+      .maybeSingle();
+    if(error){
+      console.warn('Pull failed', error);
+      return false;
     }
-    state = Object.assign({reminders:[], grocery:[], milk:{rate:70, entries:[]}, tuition:[], maid:[], vehicles:[], storeCredit:[], activities:[], groceryBills:[], sharedGroups:[]}, data.data);
-    if(!state.vehicles) state.vehicles = [];
-    if(!state.storeCredit) state.storeCredit = [];
-    if(!state.activities) state.activities = [];
-    if(!state.groceryBills) state.groceryBills = [];
-    if(!state.sharedGroups) state.sharedGroups = [];
-    lastSyncedAt = cloudUpdatedAt;
-    saveState(true); // also cache locally; true = don't re-trigger a push from this pull
-    if(!silent){
-      render();
-      renderDashboard();
-    } else {
-      // Quiet background refresh: update whichever screen is currently visible
-      // without yanking focus away from an open sheet/input.
-      const anyOpenSheet = document.querySelector('.sheet.open');
-      if(!anyOpenSheet){
+    if(data && data.data && Array.isArray(data.data.reminders)){
+      const cloudUpdatedAt = data.updated_at;
+      // If our local copy is already at least as new as the cloud's, don't clobber it.
+      if(lastSyncedAt && cloudUpdatedAt && new Date(cloudUpdatedAt) <= new Date(lastSyncedAt)){
+        return true;
+      }
+      state = Object.assign({reminders:[], grocery:[], milk:{rate:70, entries:[]}, tuition:[], maid:[], vehicles:[], storeCredit:[], activities:[], groceryBills:[], sharedGroups:[]}, data.data);
+      if(!state.vehicles) state.vehicles = [];
+      if(!state.storeCredit) state.storeCredit = [];
+      if(!state.activities) state.activities = [];
+      if(!state.groceryBills) state.groceryBills = [];
+      if(!state.sharedGroups) state.sharedGroups = [];
+      lastSyncedAt = cloudUpdatedAt;
+      saveState(true); // also cache locally; true = don't re-trigger a push from this pull
+      if(!silent){
         render();
         renderDashboard();
-        refreshCurrentPage();
+      } else {
+        // Quiet background refresh: update whichever screen is currently visible
+        // without yanking focus away from an open sheet/input.
+        const anyOpenSheet = document.querySelector('.sheet.open');
+        if(!anyOpenSheet){
+          render();
+          renderDashboard();
+          refreshCurrentPage();
+        }
       }
+      return true;
+    } else {
+      // No cloud data yet for this user — push current local/seed state up
+      return await pushStateToCloud();
     }
-  } else {
-    // No cloud data yet for this user — push current local/seed state up
-    pushStateToCloud();
+  }catch(e){
+    console.warn('Pull from cloud threw an error', e);
+    return false;
   }
 }
 
@@ -1765,7 +1791,7 @@ function refreshCurrentPage(){
 }
 
 async function pushStateToCloud(){
-  if(!supabaseClient || !currentUser || syncInFlight) return;
+  if(!supabaseClient || !currentUser || syncInFlight) return false;
   syncInFlight = true;
   try{
     const nowIso = new Date().toISOString();
@@ -1776,11 +1802,14 @@ async function pushStateToCloud(){
     });
     if(!error){
       lastSyncedAt = nowIso;
+      return true;
     } else {
       console.warn('Push failed', error);
+      return false;
     }
   }catch(e){
     console.warn('Push failed', e);
+    return false;
   } finally {
     syncInFlight = false;
   }
@@ -1813,19 +1842,33 @@ async function manualSyncNow(){
   if(!currentUser){ showToast('Sign in to sync'); return; }
   if(!supabaseClient){ showToast('Still connecting — try again in a moment'); return; }
   showToast('Syncing…');
-  const localSnapshotBeforePull = JSON.stringify(state);
-  await pullStateFromCloud(true);
-  const changedByPull = JSON.stringify(state) !== localSnapshotBeforePull;
-  if(!changedByPull){
-    // Nothing newer existed in the cloud — safe to push our local copy up
-    // (covers the case where THIS device has the newer changes).
-    await pushStateToCloud();
+  try{
+    const localSnapshotBeforePull = JSON.stringify(state);
+    const pullOk = await pullStateFromCloud(true);
+    if(!pullOk){
+      showToast('Sync failed — check your internet connection and try again');
+      return;
+    }
+    const changedByPull = JSON.stringify(state) !== localSnapshotBeforePull;
+    let pushOk = true;
+    if(!changedByPull){
+      // Nothing newer existed in the cloud — safe to push our local copy up
+      // (covers the case where THIS device has the newer changes).
+      pushOk = await pushStateToCloud();
+    }
+    if(!pushOk){
+      showToast('Could not save your changes to the cloud — try again');
+      return;
+    }
+    render();
+    renderDashboard();
+    refreshCurrentPage();
+    updateLastSyncedDisplay();
+    showToast(changedByPull ? 'Synced ✓ — got updates from another device' : 'Synced ✓');
+  }catch(e){
+    console.warn('Manual sync failed', e);
+    showToast('Sync failed — check your internet connection and try again');
   }
-  render();
-  renderDashboard();
-  refreshCurrentPage();
-  updateLastSyncedDisplay();
-  showToast(changedByPull ? 'Synced ✓ — got updates from another device' : 'Synced ✓');
 }
 
 function updateLastSyncedDisplay(){
@@ -1848,14 +1891,17 @@ function updateLastSyncedDisplay(){
 }
 
 function confirmSignOut(){
-  if(confirm('Sign out of KidVSnap on this device? Your data stays safely synced in the cloud.')){
-    signOut();
-  }
+  showCustomConfirm('Sign out of KidVSnap on this device? Your data stays safely synced in the cloud.', signOut, 'Sign Out?');
 }
 
 async function signOut(){
-  if(supabaseClient) await supabaseClient.auth.signOut();
+  try{
+    if(supabaseClient) await supabaseClient.auth.signOut();
+  }catch(e){
+    console.warn('Sign out API call failed, signing out locally anyway', e);
+  }
   currentUser = null;
+  stopPeriodicSync();
   showLogin();
   resetLoginScreen();
 }
@@ -2446,6 +2492,8 @@ function closeSheets(){
   document.getElementById('settlementSheet').classList.remove('open');
   document.getElementById('groupSearchSheet').classList.remove('open');
   document.getElementById('groupReportSheet').classList.remove('open');
+  document.getElementById('customConfirmSheet').classList.remove('open');
+  pendingConfirmCallback = null;
   if(document.getElementById('barcodeSheet').classList.contains('open')){
     closeBarcodeScanner();
   }
@@ -2583,6 +2631,29 @@ function showToast(msg){
   t.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(()=>t.classList.remove('show'), 1800);
+}
+
+/* ---------- Custom Confirm (replaces native confirm(), unreliable in PWA/standalone mode) ---------- */
+let pendingConfirmCallback = null;
+function showCustomConfirm(message, onConfirm, title){
+  document.getElementById('customConfirmTitle').textContent = title || 'Are you sure?';
+  document.getElementById('customConfirmMessage').textContent = message;
+  pendingConfirmCallback = onConfirm;
+  const yesBtn = document.getElementById('customConfirmYesBtn');
+  yesBtn.onclick = function(){
+    document.getElementById('overlay').classList.remove('open');
+    document.getElementById('customConfirmSheet').classList.remove('open');
+    const cb = pendingConfirmCallback;
+    pendingConfirmCallback = null;
+    if(cb) cb();
+  };
+  document.getElementById('overlay').classList.add('open');
+  document.getElementById('customConfirmSheet').classList.add('open');
+}
+function closeCustomConfirm(){
+  document.getElementById('overlay').classList.remove('open');
+  document.getElementById('customConfirmSheet').classList.remove('open');
+  pendingConfirmCallback = null;
 }
 
 /* ---------- Settings: export / import / clear ---------- */
@@ -3307,12 +3378,13 @@ function importData(evt){
   evt.target.value = '';
 }
 function clearAllData(){
-  if(confirm('Delete all reminders? This cannot be undone.')){
-    state = {reminders:[]};
+  showCustomConfirm('Delete ALL your data — reminders, grocery, milk, tuition, maid, vehicles, store credit, activities, and shared expenses? This cannot be undone.', function(){
+    state = {reminders:[], grocery:[], milk:{rate:70, entries:[]}, tuition:[], maid:[], vehicles:[], storeCredit:[], activities:[], groceryBills:[], sharedGroups:[]};
     saveState();
     render();
+    renderDashboard();
     showToast('All data cleared');
-  }
+  }, 'Clear All Data?');
 }
 
 /* ---------- Today label ---------- */
@@ -4001,13 +4073,15 @@ function saveGroup(){
 }
 function deleteGroup(){
   if(!activeGroupId) return;
-  if(!confirm('Delete this group and all its expenses? This cannot be undone.')) return;
-  state.sharedGroups = state.sharedGroups.filter(g=>g.id!==activeGroupId);
-  saveState();
-  closeSheets();
-  activeGroupId = null;
-  showPage('sharedGroups');
-  showToast('Group deleted');
+  const groupIdToDelete = activeGroupId;
+  showCustomConfirm('Delete this group and all its expenses? This cannot be undone.', function(){
+    state.sharedGroups = state.sharedGroups.filter(g=>g.id!==groupIdToDelete);
+    saveState();
+    closeSheets();
+    activeGroupId = null;
+    showPage('sharedGroups');
+    showToast('Group deleted');
+  }, 'Delete Group?');
 }
 
 /* ---------- Balance Engine ----------
@@ -4362,13 +4436,22 @@ function saveMember(){
 function deleteMember(){
   if(!activeMemberId) return;
   const g = getActiveGroup();
-  const hasExpenses = g.expenses.some(e=>e.paidBy===activeMemberId || e.splits.some(s=>s.memberId===activeMemberId));
-  if(hasExpenses && !confirm('This member has expenses linked to them. Remove anyway? Their past expenses will keep showing their name.')) return;
-  g.members = g.members.filter(m=>m.id!==activeMemberId);
-  saveState();
-  closeSheets();
-  renderGroupMembers();
-  showToast('Member removed');
+  const memberIdToDelete = activeMemberId;
+  const hasExpenses = g.expenses.some(e=>e.paidBy===memberIdToDelete || e.splits.some(s=>s.memberId===memberIdToDelete));
+
+  function doDelete(){
+    g.members = g.members.filter(m=>m.id!==memberIdToDelete);
+    saveState();
+    closeSheets();
+    renderGroupMembers();
+    showToast('Member removed');
+  }
+
+  if(hasExpenses){
+    showCustomConfirm('This member has expenses linked to them. Remove anyway? Their past expenses will keep showing their name.', doDelete, 'Remove Member?');
+  } else {
+    doDelete();
+  }
 }
 
 /* ---------- Expense Entry ---------- */
