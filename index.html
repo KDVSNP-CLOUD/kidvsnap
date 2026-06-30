@@ -1409,15 +1409,20 @@
     <div class="field-label">Student Name</div>
     <input type="text" class="quick-input" id="studentNameInput" placeholder="e.g. Namya">
 
-    <div class="row2">
-      <div style="flex:1;">
-        <div class="field-label">Fee Amount (₹)</div>
-        <input type="number" class="quick-input" id="studentFeeInput" placeholder="5000" inputmode="decimal">
-      </div>
-      <div style="flex:1;">
-        <div class="field-label">Classes per Cycle</div>
-        <input type="number" class="quick-input" id="studentClassesInput" placeholder="12" inputmode="numeric">
-      </div>
+    <div class="field-label">Fee Amount (₹)</div>
+    <input type="number" class="quick-input" id="studentFeeInput" placeholder="5000" inputmode="decimal">
+
+    <div class="field-label">Billing Type</div>
+    <div class="chip-row" id="studentBillingModeChips" style="margin-bottom:14px;"></div>
+
+    <div id="studentClassCycleArea">
+      <div class="field-label">Classes per Cycle</div>
+      <input type="number" class="quick-input" id="studentClassesInput" placeholder="12" inputmode="numeric">
+    </div>
+
+    <div id="studentFixedDayArea" style="display:none;">
+      <div class="field-label">Fee Due Day of Month</div>
+      <input type="number" class="quick-input" id="studentDueDayInput" placeholder="e.g. 5 (for the 5th of every month)" inputmode="numeric" min="1" max="31">
     </div>
 
     <button class="save-btn" onclick="saveStudent()">Save Student</button>
@@ -1578,15 +1583,20 @@
     <div class="field-label">Activity</div>
     <input type="text" class="quick-input" id="activityNameInput" placeholder="e.g. Swimming, Chess, Karate">
 
-    <div class="row2">
-      <div style="flex:1;">
-        <div class="field-label">Fee (₹)</div>
-        <input type="number" class="quick-input" id="activityFeeInput" placeholder="2000" inputmode="decimal">
-      </div>
-      <div style="flex:1;">
-        <div class="field-label">Sessions per Cycle</div>
-        <input type="number" class="quick-input" id="activitySessionsInput" placeholder="8" inputmode="numeric">
-      </div>
+    <div class="field-label">Fee (₹)</div>
+    <input type="number" class="quick-input" id="activityFeeInput" placeholder="2000" inputmode="decimal">
+
+    <div class="field-label">Billing Type</div>
+    <div class="chip-row" id="activityBillingModeChips" style="margin-bottom:14px;"></div>
+
+    <div id="activitySessionCycleArea">
+      <div class="field-label">Sessions per Cycle</div>
+      <input type="number" class="quick-input" id="activitySessionsInput" placeholder="8" inputmode="numeric">
+    </div>
+
+    <div id="activityFixedDayArea" style="display:none;">
+      <div class="field-label">Fee Due Day of Month</div>
+      <input type="number" class="quick-input" id="activityDueDayInput" placeholder="e.g. 5 (for the 5th of every month)" inputmode="numeric" min="1" max="31">
     </div>
 
     <button class="save-btn" onclick="saveActivity()">Save Activity</button>
@@ -1646,7 +1656,15 @@ function initSupabase(){
   if(typeof supabase === 'undefined'){
     return false;
   }
-  supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: {
+      persistSession: true,
+      storage: window.localStorage,
+      storageKey: 'kidvsnap-auth-session',
+      autoRefreshToken: true,
+      detectSessionInUrl: true
+    }
+  });
   return true;
 }
 
@@ -1938,6 +1956,7 @@ async function initAuthFlow(){
   }
 
   supabaseClient.auth.onAuthStateChange(async (event, session) => {
+    console.log('Auth event:', event, '| has session:', !!session);
     if(session && session.user){
       currentUser = session.user;
       showApp();
@@ -1947,7 +1966,10 @@ async function initAuthFlow(){
       render();
       renderDashboard();
       startPeriodicSync();
-    } else {
+    } else if(event === 'SIGNED_OUT'){
+      // Only treat this as a genuine logout when Supabase explicitly says so.
+      // Other events (e.g. a momentary null session while restoring from
+      // storage on a slow PWA cold-start) should NOT log the person out.
       currentUser = null;
       stopPeriodicSync();
       showLogin();
@@ -3006,6 +3028,9 @@ function openStoreLedger(id){
 let activeActivityId = null;
 
 function activityStatus(a){
+  if(a.billingMode === 'fixed'){
+    return fixedMonthlyStatus(a);
+  }
   const totalSessions = a.sessionDates.length;
   const cyclesCompleted = Math.floor(totalSessions / a.sessionsPerCycle);
   const lastBilled = a.lastBilledCount || 0;
@@ -3023,12 +3048,13 @@ function renderActivityList(){
       <div class="empty-state">
         <span class="emoji">🏆</span>
         <div class="title display">No activities yet</div>
-        <div class="sub">Add swimming, chess, music, or any class with a per-session fee.</div>
+        <div class="sub">Add swimming, chess, music, or any class with a per-session or fixed monthly fee.</div>
       </div>`;
     return;
   }
   container.innerHTML = state.activities.map(a=>{
     const st = activityStatus(a);
+    const isFixed = a.billingMode === 'fixed';
     return `
       <div class="card" style="display:block; ${st.due?'border-color:rgba(192,82,74,0.25);':''}">
         <div style="display:flex; align-items:center; gap:13px;">
@@ -3036,17 +3062,24 @@ function renderActivityList(){
           <div class="card-body">
             <div class="card-title">${escapeHtml(a.personName)} · ${escapeHtml(a.activityName)}</div>
             <div class="card-meta">
-              ${st.due
-                ? `<span class="due-chip overdue">Fee due ₹${formatAmt(a.fee)}</span>`
-                : `<span class="due-chip later">${st.sessionsIntoCycle}/${a.sessionsPerCycle} sessions</span><span style="font-size:11.5px;">${st.sessionsRemaining} left</span>`
+              ${isFixed
+                ? (st.due
+                    ? `<span class="due-chip overdue">Fee due ₹${formatAmt(a.fee)}</span>`
+                    : `<span class="due-chip later">Paid ✓</span><span style="font-size:11.5px;">Due ${st.dueDay}${ordinalSuffix(st.dueDay)} of month</span>`)
+                : (st.due
+                    ? `<span class="due-chip overdue">Fee due ₹${formatAmt(a.fee)}</span>`
+                    : `<span class="due-chip later">${st.sessionsIntoCycle}/${a.sessionsPerCycle} sessions</span><span style="font-size:11.5px;">${st.sessionsRemaining} left</span>`)
               }
             </div>
           </div>
           <button class="check-btn" style="border-radius:10px; width:34px; height:34px; font-size:16px; color:var(--ink-soft);" onclick="openAddActivitySheet('${a.id}')">✎</button>
         </div>
         <div class="row2" style="margin-top:12px;">
-          <button class="ghost-btn" onclick="logActivitySession('${a.id}')">+ Session Done</button>
-          ${st.due ? `<button class="primary-btn" onclick="markActivityFeePaid('${a.id}')">Mark Fee Paid</button>` : `<button class="ghost-btn" onclick="undoActivitySession('${a.id}')" style="color:var(--bad);">Undo Last</button>`}
+          ${isFixed
+            ? `<button class="primary-btn" style="width:100%;" onclick="markActivityFeePaid('${a.id}')" ${st.due?'':'disabled'}>${st.due ? 'Mark Fee Paid' : 'Already Paid This Month ✓'}</button>`
+            : `<button class="ghost-btn" onclick="logActivitySession('${a.id}')">+ Session Done</button>
+               ${st.due ? `<button class="primary-btn" onclick="markActivityFeePaid('${a.id}')">Mark Fee Paid</button>` : `<button class="ghost-btn" onclick="undoActivitySession('${a.id}')" style="color:var(--bad);">Undo Last</button>`}`
+          }
         </div>
       </div>`;
   }).join('');
@@ -3074,11 +3107,31 @@ function undoActivitySession(id){
 function markActivityFeePaid(id){
   const a = state.activities.find(x=>x.id===id);
   if(!a) return;
-  a.lastBilledCount = a.sessionDates.length;
+  if(a.billingMode === 'fixed'){
+    const st = activityStatus(a);
+    a.lastPaidMonth = st.activeMonthKey;
+  } else {
+    a.lastBilledCount = a.sessionDates.length;
+  }
   saveState();
   renderActivityList();
   renderTrackSummaries();
   showToast(`Fee marked received for ${a.personName}`);
+}
+
+let activityBillingMode = 'cycle';
+function buildActivityBillingModeChips(){
+  const wrap = document.getElementById('activityBillingModeChips');
+  wrap.innerHTML = `
+    <div class="chip ${activityBillingMode==='cycle'?'selected':''}" onclick="selectActivityBillingMode('cycle')">Per N Sessions</div>
+    <div class="chip ${activityBillingMode==='fixed'?'selected':''}" onclick="selectActivityBillingMode('fixed')">Fixed Monthly</div>
+  `;
+  document.getElementById('activitySessionCycleArea').style.display = activityBillingMode==='cycle' ? 'block' : 'none';
+  document.getElementById('activityFixedDayArea').style.display = activityBillingMode==='fixed' ? 'block' : 'none';
+}
+function selectActivityBillingMode(mode){
+  activityBillingMode = mode;
+  buildActivityBillingModeChips();
 }
 
 function openAddActivitySheet(id){
@@ -3091,7 +3144,9 @@ function openAddActivitySheet(id){
     document.getElementById('activityPersonInput').value = a.personName;
     document.getElementById('activityNameInput').value = a.activityName;
     document.getElementById('activityFeeInput').value = a.fee;
-    document.getElementById('activitySessionsInput').value = a.sessionsPerCycle;
+    document.getElementById('activitySessionsInput').value = a.sessionsPerCycle || '';
+    document.getElementById('activityDueDayInput').value = a.dueDay || '';
+    activityBillingMode = a.billingMode === 'fixed' ? 'fixed' : 'cycle';
     delRow.style.display = 'flex';
   } else {
     title.textContent = 'Add Activity';
@@ -3099,8 +3154,11 @@ function openAddActivitySheet(id){
     document.getElementById('activityNameInput').value = '';
     document.getElementById('activityFeeInput').value = '';
     document.getElementById('activitySessionsInput').value = '';
+    document.getElementById('activityDueDayInput').value = '';
+    activityBillingMode = 'cycle';
     delRow.style.display = 'none';
   }
+  buildActivityBillingModeChips();
   document.getElementById('overlay').classList.add('open');
   document.getElementById('activitySheet').classList.add('open');
 }
@@ -3109,17 +3167,30 @@ function saveActivity(){
   const personName = document.getElementById('activityPersonInput').value.trim();
   const activityName = document.getElementById('activityNameInput').value.trim();
   const fee = parseFloat(document.getElementById('activityFeeInput').value);
-  const sessionsPerCycle = parseInt(document.getElementById('activitySessionsInput').value);
   if(!personName){ showToast('Enter who this is for'); return; }
   if(!activityName){ showToast('Enter activity name'); return; }
   if(!fee || fee<=0){ showToast('Enter a valid fee'); return; }
-  if(!sessionsPerCycle || sessionsPerCycle<=0){ showToast('Enter number of sessions'); return; }
 
-  if(activeActivityId){
-    const a = state.activities.find(x=>x.id===activeActivityId);
-    a.personName=personName; a.activityName=activityName; a.fee=fee; a.sessionsPerCycle=sessionsPerCycle;
+  if(activityBillingMode === 'fixed'){
+    const dueDay = parseInt(document.getElementById('activityDueDayInput').value);
+    if(!dueDay || dueDay<1 || dueDay>31){ showToast('Enter a valid due day (1-31)'); return; }
+
+    if(activeActivityId){
+      const a = state.activities.find(x=>x.id===activeActivityId);
+      a.personName=personName; a.activityName=activityName; a.fee=fee; a.billingMode='fixed'; a.dueDay=dueDay;
+    } else {
+      state.activities.push({id:uid(), personName, activityName, fee, billingMode:'fixed', dueDay, lastPaidMonth:null, sessionDates:[], lastBilledCount:0});
+    }
   } else {
-    state.activities.push({id:uid(), personName, activityName, fee, sessionsPerCycle, sessionDates:[], lastBilledCount:0});
+    const sessionsPerCycle = parseInt(document.getElementById('activitySessionsInput').value);
+    if(!sessionsPerCycle || sessionsPerCycle<=0){ showToast('Enter number of sessions'); return; }
+
+    if(activeActivityId){
+      const a = state.activities.find(x=>x.id===activeActivityId);
+      a.personName=personName; a.activityName=activityName; a.fee=fee; a.billingMode='cycle'; a.sessionsPerCycle=sessionsPerCycle;
+    } else {
+      state.activities.push({id:uid(), personName, activityName, fee, billingMode:'cycle', sessionsPerCycle, sessionDates:[], lastBilledCount:0});
+    }
   }
   saveState();
   closeSheets();
@@ -5129,6 +5200,9 @@ function confirmMilkBulkEntry(){
 let activeStudentId = null;
 
 function tuitionStatus(student){
+  if(student.billingMode === 'fixed'){
+    return fixedMonthlyStatus(student);
+  }
   const totalClasses = student.classDates.length;
   const cyclesCompleted = Math.floor(totalClasses / student.classesPerCycle);
   const lastBilled = student.lastBilledCount || 0;
@@ -5137,6 +5211,37 @@ function tuitionStatus(student){
   const classesIntoCycle = totalClasses - (cyclesCompleted * student.classesPerCycle);
   const classesRemaining = student.classesPerCycle - classesIntoCycle;
   return {totalClasses, cyclesCompleted, due, classesIntoCycle, classesRemaining: due ? 0 : classesRemaining};
+}
+
+/* ---------- Fixed Monthly Fee (shared by Tuition & Activities) ----------
+   Due when today's day-of-month has reached/passed the configured due day,
+   for any month-cycle not yet marked paid. lastPaidMonth stores "YYYY-MM"
+   of the most recent month whose fee was marked received. */
+function fixedMonthlyStatus(item){
+  const now = new Date();
+  const todayDay = now.getDate();
+  const currentMonthKey = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
+  const dueDay = item.dueDay || 1;
+
+  // Which month's fee should currently be considered "active"?
+  // If we've reached the due day this month, this month's fee is the active one.
+  // Otherwise, the active fee is still last month's (in case it was never paid).
+  let activeMonthDate = new Date(now.getFullYear(), now.getMonth(), 1);
+  if(todayDay < dueDay){
+    activeMonthDate.setMonth(activeMonthDate.getMonth()-1);
+  }
+  const activeMonthKey = activeMonthDate.getFullYear() + '-' + String(activeMonthDate.getMonth()+1).padStart(2,'0');
+
+  const due = (item.lastPaidMonth || '') < activeMonthKey;
+  const dueDateThisCycle = new Date(activeMonthDate.getFullYear(), activeMonthDate.getMonth(), dueDay);
+
+  return {
+    isFixed: true,
+    due,
+    dueDay,
+    activeMonthKey,
+    dueDateLabel: dueDateThisCycle.toLocaleDateString('en-IN', {day:'numeric', month:'short'})
+  };
 }
 
 function renderTuitionList(){
@@ -5152,6 +5257,7 @@ function renderTuitionList(){
   }
   container.innerHTML = state.tuition.map(s=>{
     const st = tuitionStatus(s);
+    const isFixed = s.billingMode === 'fixed';
     return `
       <div class="card" style="display:block; ${st.due?'border-color:rgba(192,82,74,0.25);':''}">
         <div style="display:flex; align-items:center; gap:13px;">
@@ -5159,20 +5265,32 @@ function renderTuitionList(){
           <div class="card-body">
             <div class="card-title">${escapeHtml(s.name)}</div>
             <div class="card-meta">
-              ${st.due
-                ? `<span class="due-chip overdue">Fee due ₹${formatAmt(s.fee)}</span>`
-                : `<span class="due-chip later">${st.classesIntoCycle}/${s.classesPerCycle} classes</span><span style="font-size:11.5px;">${st.classesRemaining} left</span>`
+              ${isFixed
+                ? (st.due
+                    ? `<span class="due-chip overdue">Fee due ₹${formatAmt(s.fee)}</span>`
+                    : `<span class="due-chip later">Paid ✓</span><span style="font-size:11.5px;">Due ${st.dueDay}${ordinalSuffix(st.dueDay)} of month</span>`)
+                : (st.due
+                    ? `<span class="due-chip overdue">Fee due ₹${formatAmt(s.fee)}</span>`
+                    : `<span class="due-chip later">${st.classesIntoCycle}/${s.classesPerCycle} classes</span><span style="font-size:11.5px;">${st.classesRemaining} left</span>`)
               }
             </div>
           </div>
           <button class="check-btn" style="border-radius:10px; width:34px; height:34px; font-size:16px; color:var(--ink-soft);" onclick="openAddStudentSheet('${s.id}')">✎</button>
         </div>
         <div class="row2" style="margin-top:12px;">
-          <button class="ghost-btn" onclick="logTuitionClass('${s.id}')">+ Class Done</button>
-          ${st.due ? `<button class="primary-btn" onclick="markFeeReceived('${s.id}')">Mark Fee Paid</button>` : `<button class="ghost-btn" onclick="undoTuitionClass('${s.id}')" style="color:var(--bad);">Undo Last</button>`}
+          ${isFixed
+            ? `<button class="primary-btn" style="width:100%;" onclick="markFeeReceived('${s.id}')" ${st.due?'':'disabled'}>${st.due ? 'Mark Fee Paid' : 'Already Paid This Month ✓'}</button>`
+            : `<button class="ghost-btn" onclick="logTuitionClass('${s.id}')">+ Class Done</button>
+               ${st.due ? `<button class="primary-btn" onclick="markFeeReceived('${s.id}')">Mark Fee Paid</button>` : `<button class="ghost-btn" onclick="undoTuitionClass('${s.id}')" style="color:var(--bad);">Undo Last</button>`}`
+          }
         </div>
       </div>`;
   }).join('');
+}
+
+function ordinalSuffix(n){
+  if(n>=11 && n<=13) return 'th';
+  switch(n%10){ case 1: return 'st'; case 2: return 'nd'; case 3: return 'rd'; default: return 'th'; }
 }
 
 function logTuitionClass(id){
@@ -5203,11 +5321,31 @@ function undoTuitionClass(id){
 function markFeeReceived(id){
   const s = state.tuition.find(x=>x.id===id);
   if(!s) return;
-  s.lastBilledCount = s.classDates.length;
+  if(s.billingMode === 'fixed'){
+    const st = tuitionStatus(s);
+    s.lastPaidMonth = st.activeMonthKey;
+  } else {
+    s.lastBilledCount = s.classDates.length;
+  }
   saveState();
   renderTuitionList();
   renderTrackSummaries();
   showToast(`Fee marked received for ${s.name}`);
+}
+
+let studentBillingMode = 'cycle';
+function buildStudentBillingModeChips(){
+  const wrap = document.getElementById('studentBillingModeChips');
+  wrap.innerHTML = `
+    <div class="chip ${studentBillingMode==='cycle'?'selected':''}" onclick="selectStudentBillingMode('cycle')">Per N Classes</div>
+    <div class="chip ${studentBillingMode==='fixed'?'selected':''}" onclick="selectStudentBillingMode('fixed')">Fixed Monthly</div>
+  `;
+  document.getElementById('studentClassCycleArea').style.display = studentBillingMode==='cycle' ? 'block' : 'none';
+  document.getElementById('studentFixedDayArea').style.display = studentBillingMode==='fixed' ? 'block' : 'none';
+}
+function selectStudentBillingMode(mode){
+  studentBillingMode = mode;
+  buildStudentBillingModeChips();
 }
 
 function openAddStudentSheet(id){
@@ -5219,15 +5357,20 @@ function openAddStudentSheet(id){
     title.textContent = 'Edit Student';
     document.getElementById('studentNameInput').value = s.name;
     document.getElementById('studentFeeInput').value = s.fee;
-    document.getElementById('studentClassesInput').value = s.classesPerCycle;
+    document.getElementById('studentClassesInput').value = s.classesPerCycle || '';
+    document.getElementById('studentDueDayInput').value = s.dueDay || '';
+    studentBillingMode = s.billingMode === 'fixed' ? 'fixed' : 'cycle';
     delRow.style.display = 'flex';
   } else {
     title.textContent = 'Add Student';
     document.getElementById('studentNameInput').value = '';
     document.getElementById('studentFeeInput').value = '';
     document.getElementById('studentClassesInput').value = '';
+    document.getElementById('studentDueDayInput').value = '';
+    studentBillingMode = 'cycle';
     delRow.style.display = 'none';
   }
+  buildStudentBillingModeChips();
   document.getElementById('overlay').classList.add('open');
   document.getElementById('studentSheet').classList.add('open');
 }
@@ -5235,16 +5378,29 @@ function openAddStudentSheet(id){
 function saveStudent(){
   const name = document.getElementById('studentNameInput').value.trim();
   const fee = parseFloat(document.getElementById('studentFeeInput').value);
-  const classesPerCycle = parseInt(document.getElementById('studentClassesInput').value);
   if(!name){ showToast('Enter student name'); return; }
   if(!fee || fee<=0){ showToast('Enter a valid fee amount'); return; }
-  if(!classesPerCycle || classesPerCycle<=0){ showToast('Enter number of classes'); return; }
 
-  if(activeStudentId){
-    const s = state.tuition.find(x=>x.id===activeStudentId);
-    s.name=name; s.fee=fee; s.classesPerCycle=classesPerCycle;
+  if(studentBillingMode === 'fixed'){
+    const dueDay = parseInt(document.getElementById('studentDueDayInput').value);
+    if(!dueDay || dueDay<1 || dueDay>31){ showToast('Enter a valid due day (1-31)'); return; }
+
+    if(activeStudentId){
+      const s = state.tuition.find(x=>x.id===activeStudentId);
+      s.name=name; s.fee=fee; s.billingMode='fixed'; s.dueDay=dueDay;
+    } else {
+      state.tuition.push({id:uid(), name, fee, billingMode:'fixed', dueDay, lastPaidMonth:null, classDates:[], lastBilledCount:0});
+    }
   } else {
-    state.tuition.push({id:uid(), name, fee, classesPerCycle, classDates:[], lastBilledCount:0});
+    const classesPerCycle = parseInt(document.getElementById('studentClassesInput').value);
+    if(!classesPerCycle || classesPerCycle<=0){ showToast('Enter number of classes'); return; }
+
+    if(activeStudentId){
+      const s = state.tuition.find(x=>x.id===activeStudentId);
+      s.name=name; s.fee=fee; s.billingMode='cycle'; s.classesPerCycle=classesPerCycle;
+    } else {
+      state.tuition.push({id:uid(), name, fee, billingMode:'cycle', classesPerCycle, classDates:[], lastBilledCount:0});
+    }
   }
   saveState();
   closeSheets();
@@ -5455,7 +5611,28 @@ async function openBarcodeScanner(){
     return;
   }
 
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    document.getElementById('barcodeStatus').innerHTML =
+      'This browser doesn\'t support camera access here. On iPhone, please use Safari (not an in-app browser like Instagram/Facebook). On Android, please use Chrome.';
+    return;
+  }
+
   try{
+    // Explicitly request camera access FIRST. On iOS Safari and several Android
+    // browsers, enumerateDevices()/listVideoInputDevices() can fail or return
+    // nothing useful until getUserMedia() has actually triggered the native
+    // permission prompt at least once. Asking directly also shows the real
+    // browser permission dialog instead of silently failing.
+    let stream;
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    }catch(firstTryErr){
+      // Some devices don't support facingMode constraint — fall back to any camera.
+      stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    }
+    // We only needed this to trigger/confirm permission — ZXing will open its own stream.
+    stream.getTracks().forEach(track => track.stop());
+
     barcodeReader = new ZXing.BrowserMultiFormatReader();
     const videoEl = document.getElementById('barcodeVideo');
     const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
@@ -5468,7 +5645,18 @@ async function openBarcodeScanner(){
     });
   }catch(e){
     console.warn('Camera error', e);
-    document.getElementById('barcodeStatus').textContent = 'Could not access the camera. This IS a permission/hardware issue — check your browser\'s camera permission for this page.';
+    let friendly = 'Could not access the camera (' + (e.name || 'unknown error') + ').';
+    if(e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError'){
+      friendly = 'Camera permission was denied. On iPhone: Settings → Safari → Camera → Allow (or tap the “aA” icon in the address bar → Website Settings). On Android: tap the 🔒 icon next to the address bar → Permissions → Camera → Allow. Then reopen this scanner.';
+    } else if(e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError'){
+      friendly = 'No camera was found on this device.';
+    } else if(e.name === 'NotReadableError' || e.name === 'TrackStartError'){
+      friendly = 'The camera is busy or being used by another app. Close other camera apps and try again.';
+    } else if(e.name === 'SecurityError'){
+      friendly = 'Camera access needs a secure (https) connection — make sure you opened the app via kidvsnap.vercel.app, not a local file.';
+    }
+    document.getElementById('barcodeStatus').innerHTML = friendly +
+      '<br><br><button onclick="openBarcodeScanner()" style="background:var(--primary); color:white; border:none; border-radius:10px; padding:9px 16px; font-weight:800; font-size:13px;">Try Again</button>';
   }
 }
 
