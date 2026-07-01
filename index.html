@@ -1976,6 +1976,27 @@ async function initAuthFlow(){
     }
   });
 
+  // If the URL contains a magic-link auth token (i.e. we just arrived here
+  // from the email link), give Supabase a moment to actually process and
+  // exchange it for a session BEFORE deciding there's no session and
+  // showing the login screen. Without this, checkExistingSession() below
+  // can run a beat too early, see nothing yet, and flash back to login
+  // right as the real session is about to land via onAuthStateChange.
+  const urlLooksLikeAuthCallback = window.location.hash.includes('access_token') || window.location.search.includes('code=');
+  if(urlLooksLikeAuthCallback){
+    await new Promise(resolve => {
+      let settled = false;
+      const { data: sub } = supabaseClient.auth.onAuthStateChange((event, session) => {
+        if(!settled && session){
+          settled = true;
+          sub.subscription.unsubscribe();
+          resolve();
+        }
+      });
+      setTimeout(() => { if(!settled){ settled = true; sub.subscription.unsubscribe(); resolve(); } }, 4000);
+    });
+  }
+
   const hasSession = await checkExistingSession();
   if(hasSession){
     showApp();
